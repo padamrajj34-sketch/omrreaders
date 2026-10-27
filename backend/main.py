@@ -43,7 +43,7 @@ def read_test(test_id: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 @app.get("/api/health")
-def health(): return {"status": "ok", "scanner": "kathmandu-100-v3"}
+def health(): return {"status": "ok", "scanner": "kathmandu-100-v1"}
 
 @app.get("/api/tests")
 def list_tests():
@@ -86,14 +86,7 @@ def rectify_sheet(image):
         if len(polygon)==4 and cv2.contourArea(polygon)>search.shape[0]*search.shape[1]*.35:
             corners=polygon.reshape(4,2).astype(np.float32)/scale; break
     if corners is None: return image
-    src=order_points(corners)
-    frame=np.array([[0,0],[w-1,0],[w-1,h-1],[0,h-1]],dtype=np.float32)
-    offsets=np.abs(src-frame)
-    frame_aligned=np.max(offsets[:,0])<=w*.04 and np.max(offsets[:,1])<=h*.04
-    calibrated_aspect=828/1171
-    if frame_aligned and abs(w/h-calibrated_aspect)<=.02:
-        return image
-    width,height=1000,1414
+    src=order_points(corners); width,height=1000,1414
     dst=np.array([[0,0],[width-1,0],[width-1,height-1],[0,height-1]],dtype=np.float32)
     return cv2.warpPerspective(image,cv2.getPerspectiveTransform(src,dst),(width,height))
 
@@ -107,18 +100,19 @@ def bubble_centers(question_count,width,height):
 
 def detect_answers(image,question_count):
     sheet=rectify_sheet(image); gray=cv2.GaussianBlur(cv2.cvtColor(sheet,cv2.COLOR_BGR2GRAY),(3,3),0)
+    binary=cv2.adaptiveThreshold(gray,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,cv2.THRESH_BINARY_INV,41,17)
     answers=[]; confidence=[]; height,width=gray.shape; radius=max(4,int(width*.0105))
     for centers in bubble_centers(question_count,width,height):
         density=[]
         for x,y in centers:
-            x0,x1=max(0,x-radius),min(width,x+radius+1); y0,y1=max(0,y-radius),min(height,y+radius+1); patch=gray[y0:y1,x0:x1]
+            x0,x1=max(0,x-radius),min(width,x+radius+1); y0,y1=max(0,y-radius),min(height,y+radius+1); patch=binary[y0:y1,x0:x1]
             yy,xx=np.ogrid[:patch.shape[0],:patch.shape[1]]; cy,cx=y-y0,x-x0
-            mask=(xx-cx)**2+(yy-cy)**2 <= (radius*.35)**2
-            density.append(1-float(np.mean(patch[mask]))/255)
+            mask=(xx-cx)**2+(yy-cy)**2 <= (radius*.62)**2
+            density.append(float(np.count_nonzero(patch[mask]))/max(1,int(mask.sum())))
         order=np.argsort(density)[::-1]; best,runner=float(density[order[0]]),float(density[order[1]])
-        marked=[int(i) for i,value in enumerate(density) if value>=.45]
+        marked=[int(i) for i,value in enumerate(density) if value>=.20]
         multiple=len(marked)>1
-        selected=int(order[0]) if not multiple and best>=.45 and best-runner>=.15 else None
+        selected=int(order[0]) if not multiple and best>=.20 and best-runner>=.045 else None
         answers.append(OPTIONS[selected] if selected is not None else None)
         status="multiple_marks" if multiple else ("detected" if selected is not None else "blank_or_ambiguous")
         confidence.append({"mark_density":round(best,3),"margin":round(best-runner,3),"marked_options":[OPTIONS[i] for i in marked],"status":status})
